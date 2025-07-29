@@ -81,7 +81,7 @@ std::string expected_to_str(const tl::expected<T, ErrorCode>& expected) {
     @return A pointer to the allocated memory.
 */
 void* allocate_buffer_allocator_memory(size_t total_size);
-
+void cudaAlignedFree(void* ptr);
 void** rdma_args(const std::string& device_name);
 
 }  // namespace mooncake

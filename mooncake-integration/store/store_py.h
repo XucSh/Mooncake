@@ -346,7 +346,16 @@ class DistributedObjectStore {
         }
     };
 
+    struct VRAMSegmentDeleter {
+        void operator()(void *ptr) {
+            if (ptr) {
+                cudaAlignedFree(ptr);
+            }
+        }
+    };
+
     std::vector<std::unique_ptr<void, SegmentDeleter>> segment_ptrs_;
+    std::vector<std::unique_ptr<void, VRAMSegmentDeleter>> vram_segment_ptrs_;
     std::string protocol;
     std::string device_name;
     std::string local_hostname;

@@ -1,10 +1,16 @@
 #pragma once
 
 #include <optional>
-
+#include <cuda_runtime.h>
 #include "offset_allocator/offset_allocator.hpp"
 
 namespace mooncake {
+
+inline void checkCuda(cudaError_t result) {
+    if (result != cudaSuccess) {
+        exit(EXIT_FAILURE);
+    }
+}
 
 class BufferHandle;
 

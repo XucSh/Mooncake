@@ -258,7 +258,7 @@ tl::expected<void, ErrorCode> DistributedObjectStore::setup_internal(
             LOG(ERROR) << "Failed to allocate segment memory";
             return tl::unexpected(ErrorCode::INVALID_PARAMS);
         }
-        segment_ptrs_.emplace_back(ptr);
+        vram_segment_ptrs_.emplace_back(ptr);
         auto mount_result = client_->MountSegment(ptr, segment_size);
         if (!mount_result.has_value()) {
             LOG(ERROR) << "Failed to mount segment: "
@@ -311,6 +311,7 @@ tl::expected<void, ErrorCode> DistributedObjectStore::tearDownAll_internal() {
     client_.reset();
     client_buffer_allocator_.reset();
     segment_ptrs_.clear();
+    vram_segment_ptrs_.clear();
     local_hostname = "";
     device_name = "";
     protocol = "";

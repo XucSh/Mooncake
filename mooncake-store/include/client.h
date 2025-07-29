@@ -15,6 +15,7 @@
 #include "transfer_engine.h"
 #include "transfer_task.h"
 #include "types.h"
+#include "utils.h"
 
 namespace mooncake {
 
