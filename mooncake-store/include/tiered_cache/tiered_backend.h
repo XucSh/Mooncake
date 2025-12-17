@@ -12,6 +12,154 @@
 #include "tiered_cache/cache_tier.h"
 #include "tiered_cache/data_copier.h"
 
+/**
+ * @struct TieredLocation
+ * @brief Identifies the physical storage location of a segment within a tier.
+ *
+ * Contains the tier identifier and the data source descriptor for that location.
+ */
+
+/**
+ * @struct TierView
+ * @brief Snapshot of a tier's current status for topology reporting.
+ *
+ * Includes tier id, memory type, capacity, usage, free space, priority, and
+ * associated metadata tags.
+ */
+
+/**
+ * @struct AllocationEntry
+ * @brief Control block that represents an active allocation.
+ *
+ * When the last reference to this entry is destroyed, the destructor invokes
+ * the backend to release the associated physical resource.
+ */
+
+/**
+ * @typedef AllocationHandle
+ * @brief Reference-counted handle to an AllocationEntry.
+ */
+
+/**
+ * @brief Callback invoked after a data copy to synchronize metadata.
+ *
+ * @param key The metadata key associated with the copied data.
+ * @param new_loc The new tiered location created by the copy.
+ * @return `true` if metadata synchronization succeeded, `false` otherwise.
+ */
+
+/**
+ * @class TieredBackend
+ * @brief Manages storage placement, access, and lifecycle across multiple tiers.
+ *
+ * Provides allocation, write, commit, retrieval, deletion, and cross-tier copy
+ * operations, while exposing tier introspection and an internal release hook
+ * used by allocation control blocks.
+ */
+
+/**
+ * @brief Initialize the backend with configuration and a transfer engine.
+ *
+ * @param root JSON configuration root.
+ * @param engine Transfer engine used for cross-tier data movement.
+ * @return `true` on successful initialization, `false` otherwise.
+ */
+
+/**
+ * @brief Reserve storage space and return a handle representing the allocation.
+ *
+ * If the returned handle is destroyed without being committed, the reserved
+ * space is automatically freed.
+ *
+ * @param size Number of bytes to allocate.
+ * @param preferred_tier Optional preferred tier id for placement.
+ * @return An AllocationHandle that represents the reserved location, or an
+ * empty handle on failure.
+ */
+
+/**
+ * @brief Write data from the provided source into the allocated location.
+ *
+ * @param source Descriptor of the data to write.
+ * @param handle Handle that identifies the target allocation.
+ * @return `true` if the write completes successfully, `false` otherwise.
+ */
+
+/**
+ * @brief Register an allocation under a metadata key to make it discoverable.
+ *
+ * If a replica for the same key already exists on the same tier, it is
+ * replaced. Multiple replicas across different tiers are supported.
+ *
+ * @param key Metadata key to register (e.g., segment id).
+ * @param handle AllocationHandle representing the data to register.
+ * @return `true` on successful registration, `false` otherwise.
+ */
+
+/**
+ * @brief Retrieve an allocation handle for a metadata key.
+ *
+ * When `tier_id` is specified, returns the replica on that tier if present.
+ * When `tier_id` is not specified, returns a replica from the highest-priority
+ * available tier.
+ *
+ * @param key Metadata key to look up.
+ * @param tier_id Optional tier id to prefer.
+ * @return AllocationHandle for the located replica, or an empty handle if not found.
+ */
+
+/**
+ * @brief Remove replicas for a metadata key from the local index.
+ *
+ * When `tier_id` is specified, removes only the replica on that tier. When not
+ * specified, removes all replicas and the key's entry.
+ *
+ * @param key Metadata key to remove.
+ * @param tier_id Optional tier id specifying which replica to remove.
+ * @return `true` on successful deletion (or if the specified replica did not exist),
+ * `false` on failure.
+ */
+
+/**
+ * @brief Create a new replica of a key's data on a destination tier.
+ *
+ * Adds a new replica on `dest_tier_id`; it does not remove the original
+ * replica. After the data copy completes, the provided sync callback is
+ * invoked to update metadata accordingly.
+ *
+ * @param key Metadata key for the data being copied.
+ * @param source Descriptor of the data source to copy from.
+ * @param dest_tier_id Destination tier id where the copy will be placed.
+ * @param sync_cb Callback invoked after the copy to synchronize metadata.
+ * @return `true` if the copy and subsequent synchronization succeeded, `false` otherwise.
+ */
+
+/**
+ * @brief Return a snapshot list of current tier views.
+ *
+ * @return A vector of TierView describing each configured tier's state.
+ */
+
+/**
+ * @brief Retrieve a pointer to the CacheTier instance for a given tier id.
+ *
+ * @param tier_id Identifier of the tier to retrieve.
+ * @return Pointer to the CacheTier, or `nullptr` if the tier id is unknown.
+ */
+
+/**
+ * @brief Access the DataCopier component used for cross-tier transfers.
+ *
+ * @return Reference to the backend's DataCopier instance.
+ */
+
+/**
+ * @brief Internal API used by AllocationEntry destructor to release a location.
+ *
+ * Releases the physical resources associated with `loc`.
+ *
+ * @param loc The tiered location to free.
+ */
 namespace mooncake {
 
 class TieredBackend;  // Forward declaration

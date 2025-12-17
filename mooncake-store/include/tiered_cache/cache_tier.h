@@ -7,6 +7,73 @@
 
 #include "transfer_engine.h"
 
+/**
+ * @enum MemoryType
+ * @brief Physical storage medium type used by a cache tier.
+ */
+
+/**
+ * @brief Convert a MemoryType value to its string representation.
+ * @param type The MemoryType value to convert.
+ * @returns The string name of `type` ("DRAM", "NVME", or "UNKNOWN").
+ */
+
+/**
+ * @struct DataSource
+ * @brief Describes a source or reservation for data transfer operations.
+ *
+ * Fields:
+ * - `ptr`: pointer value (in-memory address) or file descriptor identifying the source.
+ * - `offset`: byte offset within the source (for files/SSD ranges).
+ * - `size`: size in bytes.
+ * - `type`: physical memory type of the source.
+ */
+
+/**
+ * @class CacheTier
+ * @brief Abstract interface representing a single cache tier (for example DRAM or NVMe).
+ */
+
+/**
+ * @brief Initialize the cache tier with its parent backend and transfer engine.
+ * @returns `true` if initialization succeeds, `false` otherwise.
+ */
+
+/**
+ * @brief Reserve free space of the given size without performing any data copy.
+ * @param data Output parameter that will be populated with allocation details (ptr/offset/size/type).
+ * @returns `true` if the allocation succeeds, `false` otherwise.
+ */
+
+/**
+ * @brief Release or roll back a previously allocated reservation described by `data`.
+ * @returns `true` if the free/rollback succeeds, `false` otherwise.
+ */
+
+/**
+ * @brief Retrieve the identifier for this tier.
+ * @returns The tier identifier.
+ */
+
+/**
+ * @brief Retrieve the total capacity of the tier in bytes.
+ * @returns The tier capacity in bytes.
+ */
+
+/**
+ * @brief Retrieve the current used bytes within the tier.
+ * @returns The tier usage in bytes.
+ */
+
+/**
+ * @brief Retrieve the MemoryType of this tier.
+ * @returns The tier's MemoryType.
+ */
+
+/**
+ * @brief Retrieve metadata tags associated with this tier.
+ * @returns A reference to the vector of tag strings.
+ */
 namespace mooncake {
 
 struct DataSource;

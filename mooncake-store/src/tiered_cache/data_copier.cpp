@@ -6,6 +6,13 @@
 
 namespace mooncake {
 
+/**
+ * @brief Initializes the builder's copy matrix from the global CopierRegistry.
+ *
+ * Populates the internal copy_matrix_ by registering, for each memory-type registration,
+ * the type->DRAM and DRAM->type copy functions, and by registering each direct-path
+ * (src_type -> dest_type) copy function from the registry.
+ */
 DataCopierBuilder::DataCopierBuilder() {
     // Process all registrations from the global registry.
     const auto& registry = CopierRegistry::GetInstance();
@@ -19,6 +26,17 @@ DataCopierBuilder::DataCopierBuilder() {
     }
 }
 
+/**
+ * @brief Registers a direct copy function for a specific source→destination memory-type pair.
+ *
+ * Associates `func` with the (src_type, dest_type) pair so that direct copies between those
+ * memory types will use the provided function.
+ *
+ * @param src_type Source memory type.
+ * @param dest_type Destination memory type.
+ * @param func Copy function to invoke for copies from `src_type` to `dest_type`.
+ * @return DataCopierBuilder& Reference to this DataCopierBuilder.
+ */
 DataCopierBuilder& DataCopierBuilder::AddDirectPath(MemoryType src_type,
                                                     MemoryType dest_type,
                                                     CopyFunction func) {
@@ -26,6 +44,19 @@ DataCopierBuilder& DataCopierBuilder::AddDirectPath(MemoryType src_type,
     return *this;
 }
 
+/**
+ * @brief Builds a configured DataCopier after validating required copy paths.
+ *
+ * Validates that for every registered memory type other than DRAM there exists
+ * both a copy function from that type to DRAM and from DRAM to that type.
+ * If validation succeeds, constructs and returns a DataCopier configured with
+ * the builder's copy matrix.
+ *
+ * @return std::unique_ptr<DataCopier> Unique pointer owning the configured DataCopier.
+ *
+ * @throws std::logic_error If any non-DRAM memory type is missing a required
+ * copy function to or from DRAM; the exception message identifies the missing pair.
+ */
 std::unique_ptr<DataCopier> DataCopierBuilder::Build() const {
     const auto& registry = CopierRegistry::GetInstance();
     for (const auto& reg : registry.GetMemoryTypeRegistrations()) {
@@ -50,16 +81,44 @@ std::unique_ptr<DataCopier> DataCopierBuilder::Build() const {
     return std::unique_ptr<DataCopier>(new DataCopier(copy_matrix_));
 }
 
-DataCopier::DataCopier(
+/**
+     * @brief Constructs a DataCopier with a predefined copy-function matrix.
+     *
+     * Initializes the DataCopier by taking ownership of a map that associates
+     * (source memory type, destination memory type) pairs to their corresponding
+     * copy functions.
+     *
+     * @param copy_matrix Map from (MemoryType, MemoryType) pairs to CopyFunction;
+     *                    ownership of the map is transferred to the DataCopier.
+     */
+    DataCopier::DataCopier(
     std::map<std::pair<MemoryType, MemoryType>, CopyFunction> copy_matrix)
     : copy_matrix_(std::move(copy_matrix)) {}
 
+/**
+ * @brief Locate the registered copy function for a source-destination memory-type pair.
+ *
+ * @param src_type Source memory type.
+ * @param dest_type Destination memory type.
+ * @return CopyFunction The registered copy function for (src_type, dest_type) if one exists, `nullptr` otherwise.
+ */
 CopyFunction DataCopier::FindCopier(MemoryType src_type,
                                     MemoryType dest_type) const {
     auto it = copy_matrix_.find({src_type, dest_type});
     return (it != copy_matrix_.end()) ? it->second : nullptr;
 }
 
+/**
+ * @brief Copies data from a source DataSource to a destination DataSource using registered copiers.
+ *
+ * Attempts a direct registered copier for (src.type -> dest.type). If no direct copier exists and
+ * both source and destination are non-DRAM, attempts a two-step fallback via DRAM (src -> DRAM -> dest).
+ *
+ * @param src Source DataSource containing pointer, offset, size, and memory type.
+ * @param dest Destination DataSource containing pointer, offset, size, and memory type.
+ * @return true if the copy completed successfully; false if allocation fails, a copy step fails,
+ * or no suitable copy path is registered.
+ */
 bool DataCopier::Copy(const DataSource& src, const DataSource& dest) const {
     MemoryType dest_type = dest.type;
     // Try to find a direct copy function.

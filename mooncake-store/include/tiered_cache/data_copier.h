@@ -8,6 +8,62 @@
 #include <stdexcept>
 #include <vector>
 
+/**
+ * @brief Builder that constructs a validated DataCopier instance.
+ *
+ * Ensures that all MemoryType entries have required copy paths registered
+ * (copies to and from DRAM) before producing an immutable DataCopier.
+ */
+
+/**
+ * @brief Constructs a builder initialized from the global CopierRegistry.
+ *
+ * Copies all current registrations from the global registry into the
+ * builder's internal copy matrix.
+ */
+
+/**
+ * @brief Registers an explicit direct copy path between two memory types.
+ *
+ * The provided function will be preferred over a DRAM fallback for the
+ * given src_type -> dest_type pair. Can be used to add optimized or
+ * non-registered paths (e.g., for testing).
+ * @return Reference to this builder for chaining.
+ */
+
+/**
+ * @brief Builds and returns a validated, immutable DataCopier.
+ *
+ * Verifies that required copy paths exist for every MemoryType before
+ * constructing the DataCopier.
+ * @return A unique_ptr to the constructed DataCopier.
+ * @throws std::logic_error If a required to/from DRAM copy function is missing.
+ */
+
+/**
+ * @brief Utility that copies data between memory types, with DRAM fallback.
+ *
+ * Performs copies using registered direct paths when available; otherwise
+ * falls back to a two-step copy via a temporary DRAM buffer.
+ */
+
+/**
+ * @brief Copies data from src to dst.
+ *
+ * Attempts a direct copy for src.memory_type -> dst.memory_type; if no direct
+ * copier is registered, performs a two-step copy via DRAM.
+ * @param src Data source descriptor.
+ * @param dst Data destination descriptor.
+ * @return `true` if the copy succeeds, `false` otherwise.
+ */
+
+/**
+ * @brief Locates a registered copy function for the specified memory types.
+ *
+ * @param src_type Source memory type.
+ * @param dest_type Destination memory type.
+ * @return The registered CopyFunction if found, or an empty std::function otherwise.
+ */
 namespace mooncake {
 
 using CopyFunction =
