@@ -8,6 +8,13 @@
 
 namespace mooncake {
 
+/**
+ * @brief Destructor that releases the allocation's backing resource.
+ *
+ * If this entry has an associated backend, invokes backend->FreeInternal(loc)
+ * to free the physical resource when the allocation's lifetime ends (reference
+ * count drops to zero).
+ */
 AllocationEntry::~AllocationEntry() {
     if (backend) {
         // When ref count drops to 0, call back to backend to free physical
@@ -16,8 +23,26 @@ AllocationEntry::~AllocationEntry() {
     }
 }
 
+/**
+ * @brief Constructs a TieredBackend with default-initialized internal state.
+ *
+ * Initializes the backend object with its members set to their default values.
+ */
 TieredBackend::TieredBackend() = default;
 
+/**
+ * @brief Initializes the backend by constructing the DataCopier and loading tier metadata from JSON.
+ *
+ * Parses the provided JSON `root` for a "tiers" array and records per-tier metadata (id, priority, tags).
+ * Also constructs the internal DataCopier instance. Actual instantiation of CacheTier objects is
+ * left to the tier creation logic (placeholder in this implementation).
+ *
+ * @param root JSON object containing a "tiers" member: each entry must include an `id` and `priority`,
+ *             and may include an optional `tags` array of strings.
+ * @param engine TransferEngine pointer intended for use when initializing concrete tier instances.
+ * @return true if initialization completed successfully and tier metadata was loaded; `false` if the
+ *         JSON is missing the required "tiers" member or DataCopier construction failed.
+ */
 bool TieredBackend::Init(Json::Value root, TransferEngine* engine) {
     // Initialize DataCopier
     try {
@@ -60,6 +85,14 @@ bool TieredBackend::Init(Json::Value root, TransferEngine* engine) {
     return true;
 }
 
+/**
+ * @brief Get tier IDs ordered by priority.
+ *
+ * Returns the list of configured tier identifiers sorted by priority with higher-priority
+ * tiers appearing earlier in the vector.
+ *
+ * @return std::vector<uint64_t> Vector of tier IDs ordered by descending priority (highest priority first). If two tiers have the same priority, their relative order is unspecified.
+ */
 std::vector<uint64_t> TieredBackend::GetSortedTiers() const {
     std::vector<uint64_t> ids;
     for (const auto& [id, _] : tiers_) ids.push_back(id);
@@ -71,6 +104,18 @@ std::vector<uint64_t> TieredBackend::GetSortedTiers() const {
     return ids;
 }
 
+/**
+ * Attempts to allocate storage for a buffer of the given size, preferring the optional
+ * preferred_tier and falling back to other tiers ordered by priority.
+ *
+ * If allocation succeeds, populates `out_loc->tier_id` and `out_loc->data` with the
+ * allocated location for the chosen tier.
+ *
+ * @param size Number of bytes to allocate.
+ * @param preferred_tier Optional tier id to try first.
+ * @param out_loc Output pointer that will be populated with the chosen tier and data on success.
+ * @return true if allocation succeeded and `out_loc` was populated, false otherwise.
+ */
 bool TieredBackend::AllocateInternalRaw(size_t size,
                                         std::optional<uint64_t> preferred_tier,
                                         TieredLocation* out_loc) {
@@ -101,6 +146,11 @@ bool TieredBackend::AllocateInternalRaw(size_t size,
     return false;
 }
 
+/**
+ * @brief Frees the storage referenced by a TieredLocation from its associated tier if that tier exists.
+ *
+ * @param loc Location that specifies the target tier (`tier_id`) and the tier-local allocation (`data`) to free.
+ */
 void TieredBackend::FreeInternal(const TieredLocation& loc) {
     auto it = tiers_.find(loc.tier_id);
     if (it != tiers_.end()) {
@@ -108,6 +158,18 @@ void TieredBackend::FreeInternal(const TieredLocation& loc) {
     }
 }
 
+/**
+ * @brief Allocates storage from the tiered backend and returns a handle to it.
+ *
+ * Attempts to allocate `size` bytes, preferring `preferred_tier` when provided;
+ * falls back to automatic tier selection if the preferred tier cannot satisfy the request.
+ *
+ * @param size Number of bytes to allocate.
+ * @param preferred_tier Optional id of the tier to prefer for the allocation.
+ * @return AllocationHandle Shared handle to the allocated location (reference count = 1) on success, `nullptr` on failure.
+ *
+ * @note If the returned handle is destroyed without being committed, the underlying allocation is freed.
+ */
 AllocationHandle TieredBackend::Allocate(
     size_t size, std::optional<uint64_t> preferred_tier) {
     TieredLocation loc;
@@ -120,6 +182,13 @@ AllocationHandle TieredBackend::Allocate(
     return nullptr;
 }
 
+/**
+ * @brief Writes the provided data source into the allocation specified by the handle.
+ *
+ * @param source Data to write into the allocation.
+ * @param handle Target allocation handle whose location determines the destination tier; must not be null.
+ * @return true if the data was successfully copied into the allocation; false if `handle` is null, the target tier is missing, or the copy operation fails.
+ */
 bool TieredBackend::Write(const DataSource& source, AllocationHandle handle) {
     if (!handle) return false;
     auto it = tiers_.find(handle->loc.tier_id);
@@ -128,6 +197,17 @@ bool TieredBackend::Write(const DataSource& source, AllocationHandle handle) {
     return data_copier_->Copy(source, handle->loc.data);
 }
 
+/**
+ * @brief Store or update a replica for a metadata key using the provided allocation handle.
+ *
+ * Associates the given handle's tier with the metadata key: if a replica for the same
+ * tier exists it is replaced; otherwise a new replica is appended and replicas are
+ * ordered by tier priority (higher priority first).
+ *
+ * @param key Metadata key to commit the replica under.
+ * @param handle Allocation handle containing the tier and location to commit. If null, no action is taken.
+ * @return bool `true` if the replica was committed or updated, `false` if `handle` is null.
+ */
 bool TieredBackend::Commit(const std::string& key, AllocationHandle handle) {
     if (!handle) return false;
 
@@ -183,6 +263,15 @@ bool TieredBackend::Commit(const std::string& key, AllocationHandle handle) {
     return true;
 }
 
+/**
+ * @brief Retrieve the allocation handle for a metadata key, optionally constrained to a specific tier.
+ *
+ * Searches the metadata index for the given key and returns the corresponding replica's AllocationHandle.
+ *
+ * @param key Metadata key to look up.
+ * @param tier_id Optional tier identifier to select a replica from that tier.
+ * @return AllocationHandle The handle for the found replica, or `nullptr` if the key or requested replica is not present. If `tier_id` is provided, returns the replica from that tier or `nullptr` if none exists; if not provided, returns the highest-priority replica for the key or `nullptr` if there are no replicas.
+ */
 AllocationHandle TieredBackend::Get(const std::string& key,
                                     std::optional<uint64_t> tier_id) {
     std::shared_ptr<MetadataEntry> entry = nullptr;
@@ -215,6 +304,18 @@ AllocationHandle TieredBackend::Get(const std::string& key,
     return entry->replicas.begin()->second;
 }
 
+/**
+ * @brief Remove one or all replicas for a metadata key.
+ *
+ * If `tier_id` is provided, removes only the replica stored in that tier.
+ * If `tier_id` is not provided, removes all replicas and erases the key.
+ *
+ * @param key Metadata key whose replica(s) should be removed.
+ * @param tier_id Optional tier identifier specifying a single replica to delete.
+ * @return true If a replica was removed (when `tier_id` is provided) or if the key existed and was deleted (when `tier_id` is not provided); `false` if no matching replica/key was found.
+ *
+ * @note Resource handles for removed replicas are released after locks are dropped so actual freeing of underlying storage occurs outside of held locks.
+ */
 bool TieredBackend::Delete(const std::string& key,
                            std::optional<uint64_t> tier_id) {
     // Hold references locally to ensure destruction happens OUTSIDE the
@@ -312,6 +413,19 @@ bool TieredBackend::Delete(const std::string& key,
     return true;
 }
 
+/**
+ * @brief Copies data into a destination tier and registers it as a replica for a key.
+ *
+ * Allocates space in the specified destination tier, writes the provided data into that allocation,
+ * optionally synchronizes the new location with an external master via the provided callback,
+ * and on success adds the allocation as a replica for the given key.
+ *
+ * @param key Metadata key under which the new replica will be committed.
+ * @param source Source data and size to copy; `source.size` must be greater than zero.
+ * @param dest_tier_id Tier identifier where the data should be allocated and written.
+ * @param sync_cb Optional callback invoked as `sync_cb(key, loc)` to synchronize the new location with a master; if provided, the operation aborts when the callback returns `false`.
+ * @return true if the data was copied, optionally synchronized, and committed as a replica; `false` on any failure (allocation, write, sync callback failure, or commit).
+ */
 bool TieredBackend::CopyData(const std::string& key, const DataSource& source,
                              uint64_t dest_tier_id,
                              MetadataSyncCallback sync_cb) {
@@ -336,6 +450,13 @@ bool TieredBackend::CopyData(const std::string& key, const DataSource& source,
     return Commit(key, dest_handle);
 }
 
+/**
+ * @brief Builds a snapshot of each configured tier's metrics and metadata.
+ *
+ * @return std::vector<TierView> A vector of TierView objects, one per configured tier.
+ * Each TierView contains the tier id, memory type, total capacity, used bytes,
+ * available bytes (capacity minus used), priority, and associated tags.
+ */
 std::vector<TierView> TieredBackend::GetTierViews() const {
     std::vector<TierView> views;
     for (const auto& [id, tier] : tiers_) {
@@ -348,11 +469,25 @@ std::vector<TierView> TieredBackend::GetTierViews() const {
     return views;
 }
 
+/**
+ * Retrieve the cache tier associated with the given tier identifier.
+ *
+ * The returned pointer is owned by the TieredBackend and remains valid while
+ * this backend instance exists and the tier is not removed.
+ *
+ * @param tier_id Identifier of the tier to look up.
+ * @return const CacheTier* Pointer to the CacheTier if found, `nullptr` otherwise.
+ */
 const CacheTier* TieredBackend::GetTier(uint64_t tier_id) const {
     auto it = tiers_.find(tier_id);
     return (it != tiers_.end()) ? it->second.get() : nullptr;
 }
 
+/**
+ * @brief Gets the configured DataCopier used for data transfers.
+ *
+ * @return const DataCopier& Reference to the backend's DataCopier instance.
+ */
 const DataCopier& TieredBackend::GetDataCopier() const { return *data_copier_; }
 
 }  // namespace mooncake

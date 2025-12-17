@@ -27,10 +27,59 @@ struct DirectPathRegistration {
 };
 
 /**
- * @brief A singleton registry for data copier functions.
+ * Singleton registry that collects data copier functions for different memory
+ * types and optional optimized direct copy paths.
  *
- * Modules can register their copy functions here during static initialization.
- * The DataCopierBuilder will then use this registry to construct a DataCopier.
+ * Modules register copy functions (typically via static initialization)
+ * and DataCopierBuilder queries this registry to assemble a DataCopier.
+ */
+ 
+/**
+ * Access the global CopierRegistry instance.
+ *
+ * @returns Reference to the global CopierRegistry instance.
+ */
+ 
+/**
+ * Register the to-DRAM and from-DRAM copy functions for a memory type.
+ *
+ * @param type Memory type being registered.
+ * @param to_dram Copy function that copies data from `type` to DRAM.
+ * @param from_dram Copy function that copies data from DRAM to `type`.
+ */
+ 
+/**
+ * Register an optimized direct copy function for copying between two memory
+ * types.
+ *
+ * @param src Source memory type.
+ * @param dest Destination memory type.
+ * @param func Copy function that copies from `src` to `dest`.
+ */
+ 
+/**
+ * Retrieve all registered memory type entries.
+ *
+ * @returns Reference to the vector of MemoryTypeRegistration entries.
+ */
+ 
+/**
+ * Retrieve all registered direct path entries.
+ *
+ * @returns Reference to the vector of DirectPathRegistration entries.
+ */
+ 
+/**
+ * Helper that registers a memory type's to/from DRAM copy functions during
+ * static initialization when instantiated as a static object.
+ */
+ 
+/**
+ * Construct a CopierRegistrar and register the provided copy functions.
+ *
+ * @param type Memory type to register.
+ * @param to_dram Copy function that copies data from `type` to DRAM.
+ * @param from_dram Copy function that copies data from DRAM to `type`.
  */
 class CopierRegistry {
    public:
@@ -51,7 +100,26 @@ class CopierRegistry {
     void RegisterDirectPath(MemoryType src, MemoryType dest, CopyFunction func);
 
     // These methods are used by the DataCopierBuilder to collect all
-    // registrations.
+    /**
+ * Retrieve registered memory-type copy registrations.
+ *
+ * @returns A reference to the vector of MemoryTypeRegistration entries stored
+ *          in the registry.
+ */
+/**
+ * Retrieve registered direct-copy path registrations.
+ *
+ * @returns A reference to the vector of DirectPathRegistration entries stored
+ *          in the registry.
+ */
+/**
+ * Register a memory type's to/from DRAM copy functions at static
+ * initialization time.
+ *
+ * @param type The MemoryType being registered.
+ * @param to_dram Copy function used to transfer data from the memory type to DRAM.
+ * @param from_dram Copy function used to transfer data from DRAM to the memory type.
+ */
     const std::vector<MemoryTypeRegistration>& GetMemoryTypeRegistrations()
         const;
     const std::vector<DirectPathRegistration>& GetDirectPathRegistrations()
