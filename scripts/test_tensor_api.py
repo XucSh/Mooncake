@@ -75,8 +75,7 @@ def verify_tensor_equality(original, received, rtol=0, atol=0, verbose=True):
         return False
 
     if np.array_equal(orig_np, recv_np):
-#        if verbose:
-#            print("✅ Tensors are identical!")
+
         return True
     else:
         diff_mask = orig_np != recv_np
