@@ -1224,9 +1224,7 @@ PYBIND11_MODULE(store, m) {
         .def("batch_get_tensor_into",
              &MooncakeStorePyWrapper::batch_get_tensor_into, py::arg("keys"),
              py::arg("buffer_ptrs"), py::arg("sizes"),
-             "Get tensors directly into pre-allocated buffers for "
-             "multiple "
-             "keys")
+             "Get tensors directly into pre-allocated buffers for multiple keys")
         .def(
             "get_tensor_into_with_tp",
             &MooncakeStorePyWrapper::get_tensor_into_with_tp, py::arg("key"),
