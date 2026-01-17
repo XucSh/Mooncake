@@ -81,54 +81,98 @@ def test_non_contiguous_dense():
         print(f"Expected if bug (roughly): {full_tensor[0:len(non_contig)]}")
 
 def test_sparse_tensor_simulation():
-    print("\n--- Testing Sparse Tensor Simulation ---")
-    # Simulate what _put_coo_tensor_with_tp likely does with indices
+    print("\n--- Testing Sparse Tensor Simulation (User's Logic) ---")
     store = setup_store()
     
-    # Random sparse tensor properties
+    # Simulate the user's logic exactly
     nnz = 5
     shape = (10, 10)
-    indices = torch.tensor([[0, 2, 4, 6, 8], [1, 3, 5, 7, 9]], dtype=torch.int32)
+    # Ensure indices are not sorted to force coalesce to do something if needed,
+    # though here we manually construct provided indices.
+    indices = torch.tensor([[0, 2, 4, 6, 8], [1, 3, 5, 7, 9]], dtype=torch.int64) 
     values = torch.randn(nnz)
-    sparse = torch.sparse_coo_tensor(indices, values, shape)
     
-    # If we take indices, it gives (2, 5) tensor.
-    # indices[0] is [0, 2, 4, 6, 8] contiguous.
-    # indices[:, 0] is [0, 1] non-contiguous (stride).
+    # 1. Create Sparse Tensor
+    coo = torch.sparse_coo_tensor(indices, values, shape)
     
-    # But usually we transfer row indices and col indices.
-    # If we transfer `indices` as a whole, it is contiguous.
-    # BUT, if we split it for TP (tensor parallelism)?
+    # 2. User's function logic: _put_coo_tensor_with_tp
+    # assert coo.layout == torch.sparse_coo
+    coo = coo.coalesce()
     
-    # Suppose we split by rows (dim 0 of sparse tensor)
-    # indices are filtered.
+    # tp_size = 1 case (where the bug happens)
+    shards = [(coo, None, None)]
     
-    # Let's verify standard put/get of the whole sparse tensor indices
-    key_indices = "sparse_indices"
-    rc = store.put_tensor(key_indices, indices)
-    got_indices = store.get_tensor(key_indices)
+    keys, tensors = [], []
+    name = "test_sparse_user_logic"
     
-    if torch.equal(indices, got_indices):
-        print("✅ Indices match (contiguous case)")
-    else:
-        print("❌ Indices mismatch (contiguous case)")
+    for tp, (sub, _rrange, _crange) in enumerate(shards):
+        prefix = f"{name}.tp{tp}.coo"
+        keys += [
+            f"{prefix}.indices",
+            f"{prefix}.values",
+            f"{prefix}.shape",
+        ]
         
-    # Now simulate a non-contiguous slice of indices
-    # e.g. indices[:, ::2] -> every second non-zero element
-    nc_indices = indices[:, ::2]
-    print(f"Non-contiguous indices shape: {nc_indices.shape}, is_contiguous: {nc_indices.is_contiguous()}")
+        # User's exact lines:
+        # sub.indices() returns a tensor. 
+        # .to(torch.int32) creates a new tensor (usually contiguous by default if copy happens).
+        # .contiguous() ensures it.
+        
+        # Scenario A: indices is LongTensor (int64). to(int32) -> copy -> contiguous.
+        # Scenario B: indices is IntTensor (int32). to(int32) -> self (view?) -> contiguous?
+        
+        # Let's inspect what happens naturally
+        sub_indices = sub.indices()
+        print(f"Sub indices dtype: {sub_indices.dtype}, shape: {sub_indices.shape}, stride: {sub_indices.stride()}")
+        
+        # User's transformation
+        t_indices = sub.indices().to(torch.int32).contiguous()
+        t_values = sub.values().contiguous()
+        t_shape = torch.tensor(list(sub.shape), dtype=torch.int32, device='cpu')
+        
+        tensors += [t_indices, t_values, t_shape]
+        
+        print(f"Transformed indices info: is_contig={t_indices.is_contiguous()}, stride={t_indices.stride()}, ptr={t_indices.data_ptr()}")
+
+    # 3. Batch Put
+    print("Putting tensors...")
+    results = store.batch_put_tensor(keys, tensors)
+    if any(r != 0 for r in results):
+        print(f"Batch put failed: {results}")
+        return
+
+    # 4. Verify loop (mimicking verification)
+    print("Verifying...")
+    retrieved = store.batch_get_tensor(keys)
     
-    key_nc = "sparse_indices_nc"
-    store.put_tensor(key_nc, nc_indices)
-    got_nc = store.get_tensor(key_nc)
+    # indices is at index 0
+    orig_indices = tensors[0]
+    got_indices = retrieved[0]
     
-    print(f"Original NC: \n{nc_indices}")
-    print(f"Retrieved NC: \n{got_nc}")
+    print(f"Original Indices:\n{orig_indices}")
+    print(f"Got Indices:\n{got_indices}")
     
-    if torch.equal(nc_indices, got_nc):
-        print("✅ NC Indices match")
+    if torch.equal(orig_indices, got_indices):
+        print("✅ Indices match!")
     else:
-        print("❌ NC Indices mismatch")
+        print("❌ Indices mismatch!")
+        # Debugging what we got
+        diff = (orig_indices != got_indices)
+        if diff.any():
+            print(f"First mismatch at: {torch.where(diff)[0][0]}")
+
+    # Additional check: what if we purposely make a non-contiguous int32 tensor and feed it?
+    # This verifies if my fix in store_py.cpp is working generally.
+    print("\n--- Testing General Non-Contiguous Safety ---")
+    dense_nc = torch.arange(20, dtype=torch.int32)[::2] # [0, 2, 4...] stride 2
+    key_nc = "dense_nc_test"
+    store.put_tensor(key_nc, dense_nc)
+    got_nc = store.get_tensor(key_nc)
+    if torch.equal(dense_nc, got_nc):
+        print("✅ Non-contiguous dense tensor handled correctly (C++ fix works)")
+    else:
+        print("❌ Non-contiguous dense tensor corrupted (C++ fix NOT working)")
+
 
 if __name__ == "__main__":
     test_non_contiguous_dense()
