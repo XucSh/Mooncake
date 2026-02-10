@@ -35,10 +35,14 @@ from mooncake.mooncake_config import MooncakeConfig
 # Key prefixes — each benchmark group uses its own key set to avoid
 # cross-contamination (e.g., group A caching data that group B reads).
 KEY_PREFIXES = {
-    "get_buffer_nocache": "bench_gbn_",
-    "get_buffer_cache":   "bench_gbc_",
-    "get_into_nocache":   "bench_gin_",
-    "get_into_cache":     "bench_gic_",
+    "get_buffer_nocache":       "bench_gbn_",
+    "get_buffer_cache":         "bench_gbc_",
+    "get_into_nocache":         "bench_gin_",
+    "get_into_cache":           "bench_gic_",
+    "batch_get_buffer_nocache": "bench_bgbn_",
+    "batch_get_buffer_cache":   "bench_bgbc_",
+    "batch_get_into_nocache":   "bench_bgin_",
+    "batch_get_into_cache":     "bench_bgic_",
 }
 
 
@@ -141,6 +145,61 @@ def bench_get_into(store, keys, size_bytes, cache):
     return elapsed
 
 
+def bench_batch_get_buffer(store, keys, cache):
+    """Benchmark batch_get_buffer for all keys in one call, return total time."""
+    # Warmup
+    _ = store.batch_get_buffer(keys[:1], cache=False)
+
+    start = time.perf_counter()
+    results = store.batch_get_buffer(keys, cache=cache)
+    elapsed = time.perf_counter() - start
+    if results is None or len(results) != len(keys):
+        print(f"  ERROR: batch_get_buffer(cache={cache}) returned {len(results) if results else 0}/{len(keys)} results")
+        return -1
+    for i, buf in enumerate(results):
+        if buf is None:
+            print(f"  ERROR: batch_get_buffer result[{i}] ({keys[i]}) is None")
+            return -1
+    return elapsed
+
+
+def bench_batch_get_into(store, keys, size_bytes, cache):
+    """Benchmark batch_get_into for all keys in one call using pre-registered buffer."""
+    num_keys = len(keys)
+    buf_size = int(size_bytes)
+    total_size = buf_size * num_keys
+
+    large_buf = (ctypes.c_ubyte * total_size)()
+    large_ptr = ctypes.addressof(large_buf)
+    rc = store.register_buffer(large_ptr, total_size)
+    if rc != 0:
+        print(f"  ERROR: register_buffer failed with rc={rc}")
+        return -1
+
+    buffer_ptrs = [large_ptr + i * buf_size for i in range(num_keys)]
+    sizes = [buf_size] * num_keys
+
+    # Warmup
+    _ = store.batch_get_into(keys[:1], buffer_ptrs[:1], sizes[:1], cache=False)
+
+    start = time.perf_counter()
+    lengths = store.batch_get_into(keys, buffer_ptrs, sizes, cache=cache)
+    elapsed = time.perf_counter() - start
+
+    if lengths is None or len(lengths) != num_keys:
+        print(f"  ERROR: batch_get_into(cache={cache}) returned unexpected result")
+        store.unregister_buffer(large_ptr)
+        return -1
+    for i, nbytes in enumerate(lengths):
+        if nbytes < 0:
+            print(f"  ERROR: batch_get_into result[{i}] ({keys[i]}) returned {nbytes}")
+            store.unregister_buffer(large_ptr)
+            return -1
+
+    store.unregister_buffer(large_ptr)
+    return elapsed
+
+
 def run_reader(store, args):
     """Reader: benchmark get with and without cache using separate key sets."""
     size_bytes = args.size_mb * 1024 * 1024
@@ -198,6 +257,48 @@ def run_reader(store, args):
     print("  (Round 1 triggers async caching; later rounds read from local)")
     for r in range(rounds):
         t = bench_get_into(store, keys, size_bytes, cache=True)
+        bw = total_mb / t if t > 0 else 0
+        if r == 0:
+            tag = " [async caching triggered]"
+        else:
+            tag = " [local]"
+        print(f"  Round {r+1}{tag}: {t:.4f}s, {bw:.2f} MB/s")
+
+    # --- Benchmark 5: batch_get_buffer without cache (baseline) ---
+    keys = make_keys(KEY_PREFIXES["batch_get_buffer_nocache"], num_keys)
+    print(f"\n--- batch_get_buffer (cache=False) x {rounds} rounds ---")
+    for r in range(rounds):
+        t = bench_batch_get_buffer(store, keys, cache=False)
+        bw = total_mb / t if t > 0 else 0
+        print(f"  Round {r+1}: {t:.4f}s, {bw:.2f} MB/s")
+
+    # --- Benchmark 6: batch_get_buffer with cache ---
+    keys = make_keys(KEY_PREFIXES["batch_get_buffer_cache"], num_keys)
+    print(f"\n--- batch_get_buffer (cache=True) x {rounds} rounds ---")
+    print("  (Round 1 triggers async caching; later rounds read from local)")
+    for r in range(rounds):
+        t = bench_batch_get_buffer(store, keys, cache=True)
+        bw = total_mb / t if t > 0 else 0
+        if r == 0:
+            tag = " [async caching triggered]"
+        else:
+            tag = " [local]"
+        print(f"  Round {r+1}{tag}: {t:.4f}s, {bw:.2f} MB/s")
+
+    # --- Benchmark 7: batch_get_into without cache (baseline) ---
+    keys = make_keys(KEY_PREFIXES["batch_get_into_nocache"], num_keys)
+    print(f"\n--- batch_get_into (cache=False) x {rounds} rounds ---")
+    for r in range(rounds):
+        t = bench_batch_get_into(store, keys, size_bytes, cache=False)
+        bw = total_mb / t if t > 0 else 0
+        print(f"  Round {r+1}: {t:.4f}s, {bw:.2f} MB/s")
+
+    # --- Benchmark 8: batch_get_into with cache ---
+    keys = make_keys(KEY_PREFIXES["batch_get_into_cache"], num_keys)
+    print(f"\n--- batch_get_into (cache=True) x {rounds} rounds ---")
+    print("  (Round 1 triggers async caching; later rounds read from local)")
+    for r in range(rounds):
+        t = bench_batch_get_into(store, keys, size_bytes, cache=True)
         bw = total_mb / t if t > 0 else 0
         if r == 0:
             tag = " [async caching triggered]"
