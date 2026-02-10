@@ -97,12 +97,18 @@ size_t BufferHandle::size() const { return handle_.size(); }
 
 // Utility functions for buffer and slice management
 std::vector<Slice> split_into_slices(BufferHandle& handle) {
-    std::vector<Slice> slices;
     auto base = static_cast<uint8_t*>(handle.ptr());
+    auto length = handle.size();
+    return split_into_slices(base, length);
+}
+
+std::vector<Slice> split_into_slices(void* buffer, size_t length) {
+    std::vector<Slice> slices;
+    auto base = static_cast<uint8_t*>(buffer);
     size_t offset = 0;
 
-    while (offset < handle.size()) {
-        size_t chunk_size = std::min(handle.size() - offset, kMaxSliceSize);
+    while (offset < length) {
+        size_t chunk_size = std::min(length - offset, kMaxSliceSize);
         slices.push_back({base + offset, chunk_size});
         offset += chunk_size;
     }
@@ -111,9 +117,11 @@ std::vector<Slice> split_into_slices(BufferHandle& handle) {
 
 uint64_t calculate_total_size(const Replica::Descriptor& replica) {
     uint64_t total_length = 0;
-    if (replica.is_memory_replica() == false) {
+    if (replica.is_disk_replica()) {
         auto& disk_descriptor = replica.get_disk_descriptor();
         total_length = disk_descriptor.object_size;
+    } else if (replica.is_local_disk_replica()) {
+        total_length = replica.get_local_disk_descriptor().object_size;
     } else {
         total_length = replica.get_memory_descriptor().buffer_descriptor.size_;
     }
@@ -122,7 +130,7 @@ uint64_t calculate_total_size(const Replica::Descriptor& replica) {
 
 int allocateSlices(std::vector<Slice>& slices,
                    const Replica::Descriptor& replica, void* buffer_ptr) {
-    if (replica.is_memory_replica() == false) {
+    if (replica.is_disk_replica()) {
         // For disk-based replica, split into slices based on file size
         uint64_t offset = 0;
         uint64_t total_length = replica.get_disk_descriptor().object_size;
@@ -132,6 +140,9 @@ int allocateSlices(std::vector<Slice>& slices,
             slices.emplace_back(Slice{chunk_ptr, chunk_size});
             offset += chunk_size;
         }
+    } else if (replica.is_local_disk_replica()) {
+        slices.emplace_back(
+            Slice{buffer_ptr, replica.get_local_disk_descriptor().object_size});
     } else {
         // For memory-based replica, split into slices based on buffer
         // descriptors

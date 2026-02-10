@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <boost/functional/hash.hpp>
 #include <memory>
 #include <mutex>
@@ -201,23 +202,28 @@ class Client {
     /**
      * @brief Removes an object and all its replicas
      * @param key Key to remove
+     * @param force If true, skip lease and replication task checks
      * @return ErrorCode indicating success/failure
      */
-    tl::expected<void, ErrorCode> Remove(const ObjectKey& key);
+    tl::expected<void, ErrorCode> Remove(const ObjectKey& key,
+                                         bool force = false);
 
     /**
      * @brief Removes objects from the store whose keys match a regex pattern.
      * @param str The regular expression string to match against object keys.
+     * @param force If true, skip lease and replication task checks
      * @return An expected object containing the number of removed objects on
      * success, or an ErrorCode on failure.
      */
-    tl::expected<long, ErrorCode> RemoveByRegex(const ObjectKey& str);
+    tl::expected<long, ErrorCode> RemoveByRegex(const ObjectKey& str,
+                                                bool force = false);
 
     /**
      * @brief Removes all objects and all its replicas
+     * @param force If true, skip lease and replication task checks
      * @return tl::expected<long, ErrorCode> number of removed objects or error
      */
-    tl::expected<long, ErrorCode> RemoveAll();
+    tl::expected<long, ErrorCode> RemoveAll(bool force = false);
 
     /**
      * @brief Registers a memory segment to master for allocation
@@ -225,7 +231,8 @@ class Client {
      * @param size Size of the buffer in bytes
      * @return ErrorCode indicating success/failure
      */
-    tl::expected<void, ErrorCode> MountSegment(const void* buffer, size_t size);
+    tl::expected<void, ErrorCode> MountSegment(
+        const void* buffer, size_t size, const std::string& protocol = "tcp");
 
     /**
      * @brief Unregisters a memory segment from master
@@ -306,6 +313,12 @@ class Client {
     tl::expected<QueryTaskResponse, ErrorCode> QueryTask(const UUID& task_id);
 
     /**
+     * @brief Get global segment base address for cxl protocol
+     * @return Global segment base address
+     */
+    void* GetBaseAddr();
+
+    /**
      * @brief Mounts a local disk segment into the master.
      * @param enable_offloading If true, enables offloading (write-to-file).
      */
@@ -324,21 +337,21 @@ class Client {
         std::unordered_map<std::string, int64_t>& offloading_objects);
 
     /**
-     * @brief Performs a batched write of multiple objects using a
+     * @brief Performs a batched read of multiple objects using a
      * high-throughput Transfer Engine.
      * @param transfer_engine_addr Address of the Transfer Engine service (e.g.,
      * "ip:port").
      * @param keys List of keys identifying the data objects to be transferred
      * @param pointers Array of destination memory addresses on the remote node
      *                         where data will be written (one per key)
-     * @param batched_slices Map from object key to its data slice
+     * @param batch_slices Map from object key to its data slice
      * (`mooncake::Slice`), containing raw bytes to be written.
      */
-    tl::expected<void, ErrorCode> BatchPutOffloadObject(
+    tl::expected<void, ErrorCode> BatchGetOffloadObject(
         const std::string& transfer_engine_addr,
         const std::vector<std::string>& keys,
         const std::vector<uintptr_t>& pointers,
-        const std::unordered_map<std::string, Slice>& batched_slices);
+        const std::unordered_map<std::string, Slice>& batch_slices);
 
     /**
      * @brief Notifies the master that offloading of specified objects has
@@ -404,7 +417,7 @@ class Client {
      * @brief Private constructor to enforce creation through Create() method
      */
     Client(const std::string& local_hostname,
-           const std::string& metadata_connstring,
+           const std::string& metadata_connstring, const std::string& protocol,
            const std::map<std::string, std::string>& labels = {});
 
     /**
@@ -486,6 +499,7 @@ class Client {
     // Configuration
     const std::string local_hostname_;
     const std::string metadata_connstring_;
+    const std::string protocol_;
 
     // Client persistent thread pool for async operations
     ThreadPool write_thread_pool_;
@@ -496,6 +510,58 @@ class Client {
     std::thread ping_thread_;
     std::atomic<bool> ping_running_{false};
     void PingThreadMain(bool is_ha_mode, std::string current_master_address);
+    void PollAndDispatchTasks();
+    void SubmitTask(const TaskAssignment& assignment);
+
+    // For task management
+    // Client-side task representation
+    struct ClientTask {
+        TaskAssignment assignment;
+        uint32_t retry_count = 0;
+
+        void increment_retry() { retry_count++; }
+    };
+
+    void ExecuteTask(const ClientTask& client_task);
+
+    tl::expected<void, ErrorCode> ExecuteReplicaTransfer(
+        const std::string& key, const std::string& action_name,
+        std::function<tl::expected<void, ErrorCode>()> end_fn,
+        std::function<tl::expected<void, ErrorCode>()> revoke_fn,
+        const Replica::Descriptor& source,
+        const std::vector<Replica::Descriptor>& targets);
+
+    /**
+     * @brief Copy an object's replica to target segments
+     * @param key Object key
+     * @param source Source segment
+     * @param targets Target segments
+     * @return tl::expected<void, ErrorCode> indicating success/failure
+     */
+    tl::expected<void, ErrorCode> Copy(const std::string& key,
+                                       const std::string& source,
+                                       const std::vector<std::string>& targets);
+
+    /**
+     * @brief Move an object's replica from source segment to target segment
+     * @param key Object key
+     * @param source Source segment
+     * @param target Target segment
+     * @return tl::expected<void, ErrorCode> indicating success/failure
+     */
+    tl::expected<void, ErrorCode> Move(const std::string& key,
+                                       const std::string& source,
+                                       const std::string& target);
+
+    bool IsReplicaOnLocalMemory(const Replica::Descriptor& replica);
+
+    // Task thread pool for async task execution
+    ThreadPool task_thread_pool_;
+    std::atomic<bool> task_running_{true};
+
+    // Task polling configuration
+    static constexpr size_t kTaskBatchSize =
+        16;  // Number of tasks to fetch per poll
 };
 
 }  // namespace mooncake

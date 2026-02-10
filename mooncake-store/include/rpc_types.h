@@ -115,6 +115,7 @@ struct TaskAssignment {
     TaskType type;
     std::string payload;
     int64_t created_at_ms_epoch;
+    uint32_t max_retry_attempts;
 
     TaskAssignment() = default;
     TaskAssignment(const Task& task)
@@ -124,9 +125,11 @@ struct TaskAssignment {
           created_at_ms_epoch(static_cast<int64_t>(
               std::chrono::duration_cast<std::chrono::milliseconds>(
                   task.created_at.time_since_epoch())
-                  .count())) {}
+                  .count())),
+          max_retry_attempts(task.max_retry_attempts) {}
 };
-YLT_REFL(TaskAssignment, id, type, payload, created_at_ms_epoch);
+YLT_REFL(TaskAssignment, id, type, payload, created_at_ms_epoch,
+         max_retry_attempts);
 
 /**
  * @brief Task update structure
@@ -139,5 +142,21 @@ struct TaskCompleteRequest {
     TaskCompleteRequest() = default;
 };
 YLT_REFL(TaskCompleteRequest, id, status, message);
+
+struct BatchGetOffloadObjectResponse {
+    std::vector<uint64_t> pointers;
+    std::string transfer_engine_addr;
+    uint64_t gc_ttl_ms;
+
+    BatchGetOffloadObjectResponse() = default;
+    BatchGetOffloadObjectResponse(std::vector<uint64_t>&& pointers_param,
+                                  std::string transfer_engine_addr_param,
+                                  uint64_t gc_ttl_ms_param)
+        : pointers(std::move(pointers_param)),
+          transfer_engine_addr(std::move(transfer_engine_addr_param)),
+          gc_ttl_ms(gc_ttl_ms_param) {}
+};
+YLT_REFL(BatchGetOffloadObjectResponse, pointers, transfer_engine_addr,
+         gc_ttl_ms);
 
 }  // namespace mooncake

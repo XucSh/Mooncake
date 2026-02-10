@@ -74,6 +74,20 @@ class MooncakeBackend final : public ::c10d::Backend {
     c10::intrusive_ptr<c10d::Work> barrier(
         const c10d::BarrierOptions& opts) override;
 
+    c10::intrusive_ptr<c10d::Work> reduce(
+        std::vector<at::Tensor>& tensors,
+        const c10d::ReduceOptions& opts) override;
+
+    c10::intrusive_ptr<c10d::Work> gather(
+        std::vector<std::vector<at::Tensor>>& outputTensors,
+        std::vector<at::Tensor>& inputTensors,
+        const c10d::GatherOptions& opts) override;
+
+    c10::intrusive_ptr<c10d::Work> scatter(
+        std::vector<at::Tensor>& outputTensors,
+        std::vector<std::vector<at::Tensor>>& inputTensors,
+        const c10d::ScatterOptions& opts) override;
+
     void shutdown() override;
 
     static void setHostIp(const std::string& hostIp) { hostIp_ = hostIp; }
@@ -84,7 +98,16 @@ class MooncakeBackend final : public ::c10d::Backend {
 
     std::string getPreferredHca(std::string location) {
         auto matrix = engine_.getLocalTopology()->getMatrix();
-        return matrix[location].preferred_hca[0];
+        auto it = matrix.find(location);
+        if (it == matrix.end()) {
+            LOG(INFO) << "Topology is " << engine_.getLocalTopology()->toJson();
+            LOG(ERROR) << "Topology entry not found for location: " << location;
+        } else if (it->second.preferred_hca.empty()) {
+            LOG(INFO) << "Topology is " << engine_.getLocalTopology()->toJson();
+            LOG(ERROR) << "Preferred HCA list is empty for location: "
+                       << location;
+        }
+        return it->second.preferred_hca[0];
     }
 
     at::Tensor getActiveRanksTensor() { return meta_.activeRanksTensor; }
@@ -132,6 +155,7 @@ class MooncakeBackend final : public ::c10d::Backend {
     int32_t* warmup_send_region_;
     int32_t* warmup_recv_region_;
     static MooncakeWorker worker_;
+    SegmentInfo rank_info;
     TransferGroupMeta meta_;
     bool isShutdown_{false};
     int nextRankForConnection_ = 0;
