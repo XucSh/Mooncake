@@ -17,6 +17,10 @@ Environment variables (set on both machines):
   MOONCAKE_TE_META_DATA_SERVER=P2PHANDSHAKE
   MOONCAKE_GLOBAL_SEGMENT_SIZE=16gb
   MOONCAKE_LOCAL_BUFFER_SIZE=8gb
+
+Caching is async (fire-and-forget): the first cache=True call triggers
+background caching and proceeds with remote transfer at normal speed.
+Subsequent calls find the local replica and read from local memory.
 """
 
 import argparse
@@ -27,6 +31,19 @@ import time
 
 from mooncake.store import MooncakeDistributedStore
 from mooncake.mooncake_config import MooncakeConfig
+
+# Key prefixes — each benchmark group uses its own key set to avoid
+# cross-contamination (e.g., group A caching data that group B reads).
+KEY_PREFIXES = {
+    "get_buffer_nocache": "bench_gbn_",
+    "get_buffer_cache":   "bench_gbc_",
+    "get_into_nocache":   "bench_gin_",
+    "get_into_cache":     "bench_gic_",
+}
+
+
+def make_keys(prefix, num_keys):
+    return [f"{prefix}{i}" for i in range(num_keys)]
 
 
 def create_store():
@@ -50,22 +67,27 @@ def create_store():
 
 
 def run_writer(store, args):
-    """Writer: put test data into the store."""
-    size_bytes = args.size_mb * 1024 * 1024
+    """Writer: put test data into the store (separate key set per group)."""
+    size_bytes = int(args.size_mb * 1024 * 1024)
     num_keys = args.num_keys
 
-    print(f"\n=== Writer: putting {num_keys} keys, {args.size_mb} MB each ===")
+    all_prefixes = list(KEY_PREFIXES.values())
+    total_keys = num_keys * len(all_prefixes)
+    print(f"\n=== Writer: putting {total_keys} keys "
+          f"({num_keys} x {len(all_prefixes)} groups), "
+          f"{args.size_mb} MB each ===")
 
-    for i in range(num_keys):
-        key = f"cache_bench_{i}"
-        data = os.urandom(int(size_bytes))
-        rc = store.put(key, data)
-        if rc != 0:
-            print(f"  put({key}) failed with rc={rc}")
-            return
-        print(f"  put({key}) OK, {args.size_mb} MB")
+    for prefix in all_prefixes:
+        keys = make_keys(prefix, num_keys)
+        for key in keys:
+            data = os.urandom(size_bytes)
+            rc = store.put(key, data)
+            if rc != 0:
+                print(f"  put({key}) failed with rc={rc}")
+                return
+        print(f"  {prefix}* : {num_keys} keys OK")
 
-    print(f"\nWriter done. {num_keys} keys written.")
+    print(f"\nWriter done. {total_keys} keys written.")
     print("Press Ctrl+C to exit (keep running so data stays alive)...")
     try:
         while True:
@@ -74,9 +96,9 @@ def run_writer(store, args):
         print("\nWriter exiting.")
 
 
-def bench_get_buffer(store, keys, cache, label):
+def bench_get_buffer(store, keys, cache):
     """Benchmark get_buffer for all keys, return total time in seconds."""
-    # Warmup: single get to establish connection
+    # Warmup
     _ = store.get_buffer(keys[0], cache=False)
 
     start = time.perf_counter()
@@ -89,19 +111,18 @@ def bench_get_buffer(store, keys, cache, label):
     return elapsed
 
 
-def bench_get_into(store, keys, size_bytes, cache, label):
+def bench_get_into(store, keys, size_bytes, cache):
     """Benchmark get_into for all keys using pre-registered buffer."""
     num_keys = len(keys)
     buf_size = int(size_bytes)
     total_size = buf_size * num_keys
 
-    # Allocate and register a large buffer
     large_buf = (ctypes.c_ubyte * total_size)()
     large_ptr = ctypes.addressof(large_buf)
     rc = store.register_buffer(large_ptr, total_size)
     if rc != 0:
         print(f"  ERROR: register_buffer failed with rc={rc}")
-        return -1, None, None
+        return -1
 
     # Warmup
     _ = store.get_into(keys[0], large_ptr, buf_size, cache=False)
@@ -113,65 +134,75 @@ def bench_get_into(store, keys, size_bytes, cache, label):
         if nbytes < 0:
             print(f"  ERROR: get_into({key}, cache={cache}) returned {nbytes}")
             store.unregister_buffer(large_ptr)
-            return -1, None, None
+            return -1
     elapsed = time.perf_counter() - start
 
     store.unregister_buffer(large_ptr)
-    return elapsed, large_buf, large_ptr
+    return elapsed
 
 
 def run_reader(store, args):
-    """Reader: benchmark get with and without cache."""
+    """Reader: benchmark get with and without cache using separate key sets."""
     size_bytes = args.size_mb * 1024 * 1024
     num_keys = args.num_keys
-    keys = [f"cache_bench_{i}" for i in range(num_keys)]
     rounds = args.rounds
+    total_mb = args.size_mb * num_keys
 
     print(f"\n=== Reader: benchmarking {num_keys} keys, "
           f"{args.size_mb} MB each, {rounds} rounds ===")
 
-    # Verify keys exist
-    for key in keys:
-        buf = store.get_buffer(key, cache=False)
+    # Verify all key sets exist
+    for group, prefix in KEY_PREFIXES.items():
+        keys = make_keys(prefix, num_keys)
+        buf = store.get_buffer(keys[0], cache=False)
         if buf is None:
-            print(f"  ERROR: key '{key}' not found. Is the writer running?")
+            print(f"  ERROR: key '{keys[0]}' not found. Is the writer running?")
             return
-    print(f"  All {num_keys} keys verified.\n")
+    print(f"  All key sets verified.\n")
 
-    total_mb = args.size_mb * num_keys
-
-    # --- Benchmark 1: get_buffer without cache ---
+    # --- Benchmark 1: get_buffer without cache (baseline) ---
+    keys = make_keys(KEY_PREFIXES["get_buffer_nocache"], num_keys)
     print(f"--- get_buffer (cache=False) x {rounds} rounds ---")
     for r in range(rounds):
-        t = bench_get_buffer(store, keys, cache=False, label="no-cache")
+        t = bench_get_buffer(store, keys, cache=False)
         bw = total_mb / t if t > 0 else 0
         print(f"  Round {r+1}: {t:.4f}s, {bw:.2f} MB/s")
 
-    # --- Benchmark 2: get_buffer with cache (1st round caches) ---
+    # --- Benchmark 2: get_buffer with cache ---
+    # Round 1: triggers async caching (same speed as no-cache)
+    # Round 2: caching may still be in progress (background)
+    # Round 3+: local replica available, should be faster
+    keys = make_keys(KEY_PREFIXES["get_buffer_cache"], num_keys)
     print(f"\n--- get_buffer (cache=True) x {rounds} rounds ---")
-    print("  (Round 1 triggers caching; subsequent rounds read from local)")
+    print("  (Round 1 triggers async caching; later rounds read from local)")
     for r in range(rounds):
-        t = bench_get_buffer(store, keys, cache=True, label="cache")
+        t = bench_get_buffer(store, keys, cache=True)
         bw = total_mb / t if t > 0 else 0
-        tag = " [caching]" if r == 0 else " [local]"
+        if r == 0:
+            tag = " [async caching triggered]"
+        else:
+            tag = " [local]"
         print(f"  Round {r+1}{tag}: {t:.4f}s, {bw:.2f} MB/s")
 
-    # --- Benchmark 3: get_into without cache ---
+    # --- Benchmark 3: get_into without cache (baseline) ---
+    keys = make_keys(KEY_PREFIXES["get_into_nocache"], num_keys)
     print(f"\n--- get_into (cache=False) x {rounds} rounds ---")
     for r in range(rounds):
-        t, _, _ = bench_get_into(
-            store, keys, size_bytes, cache=False, label="no-cache")
+        t = bench_get_into(store, keys, size_bytes, cache=False)
         bw = total_mb / t if t > 0 else 0
         print(f"  Round {r+1}: {t:.4f}s, {bw:.2f} MB/s")
 
     # --- Benchmark 4: get_into with cache ---
+    keys = make_keys(KEY_PREFIXES["get_into_cache"], num_keys)
     print(f"\n--- get_into (cache=True) x {rounds} rounds ---")
-    print("  (Round 1 triggers caching; subsequent rounds read from local)")
+    print("  (Round 1 triggers async caching; later rounds read from local)")
     for r in range(rounds):
-        t, _, _ = bench_get_into(
-            store, keys, size_bytes, cache=True, label="cache")
+        t = bench_get_into(store, keys, size_bytes, cache=True)
         bw = total_mb / t if t > 0 else 0
-        tag = " [caching]" if r == 0 else " [local]"
+        if r == 0:
+            tag = " [async caching triggered]"
+        else:
+            tag = " [local]"
         print(f"  Round {r+1}{tag}: {t:.4f}s, {bw:.2f} MB/s")
 
     print("\nReader done.")
@@ -185,7 +216,7 @@ def main():
         help="Role: 'writer' puts data, 'reader' benchmarks gets")
     parser.add_argument(
         "--num_keys", type=int, default=10,
-        help="Number of keys to put/get (default: 10)")
+        help="Number of keys per group to put/get (default: 10)")
     parser.add_argument(
         "--size_mb", type=float, default=64.0,
         help="Size of each value in MB (default: 64)")

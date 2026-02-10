@@ -777,8 +777,8 @@ tl::expected<CacheOnGetResponse, ErrorCode> WrappedMasterService::CacheOnGet(
             timer.LogRequest("client_id=", client_id, ", key=", key,
                              ", local_segment=", local_segment);
         },
-        [] {},
-        [] {});
+        [] { MasterMetricManager::instance().inc_copy_start_requests(); },
+        [] { MasterMetricManager::instance().inc_copy_start_failures(); });
 }
 
 tl::expected<MoveStartResponse, ErrorCode> WrappedMasterService::MoveStart(

@@ -566,10 +566,10 @@ class RealClient : public PyClient {
     // Protected by shared_mutex: read lock to check, write lock to insert/erase
     std::shared_mutex cache_inflight_mutex_;
     std::unordered_set<std::string> cache_inflight_;
-    // Returns true if this thread performed the cache (caller should re-query),
-    // false if key is already being cached by another thread (caller proceeds
-    // with remote transfer from existing query results).
-    bool try_cache_on_get(const std::string &key);
+    // Fire-and-forget: launches async caching in background thread.
+    // Caller always proceeds with remote transfer at normal speed.
+    // Future calls benefit from the cached local replica.
+    void try_cache_on_get(const std::string &key);
 };
 
 }  // namespace mooncake

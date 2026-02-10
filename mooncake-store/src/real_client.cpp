@@ -1086,12 +1086,10 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
         return nullptr;
     }
 
-    // Cache-on-get: if preferred replica is not local, try caching
+    // Cache-on-get: if preferred replica is not local, trigger async caching
+    // for future calls. This call proceeds with remote transfer at normal speed.
     if (cache && !client_->IsReplicaOnLocalMemory(res.value())) {
-        if (try_cache_on_get(key)) {
-            // Cache succeeded, re-run with cache=false to pick up local replica
-            return get_buffer_internal(key, client_buffer_allocator, false);
-        }
+        try_cache_on_get(key);
     }
 
     const auto &replica = res.value();
@@ -1200,9 +1198,9 @@ RealClient::batch_get_buffer_internal(const std::vector<std::string> &keys,
     // 1. Query metadata for all keys
     auto query_results = client_->BatchQuery(keys);
 
-    // Cache-on-get: for keys whose preferred replica is not local, try caching
+    // Cache-on-get: trigger async caching for non-local keys (fire-and-forget).
+    // This call proceeds with remote transfer; future calls benefit from cache.
     if (cache) {
-        bool any_cached = false;
         for (size_t i = 0; i < keys.size(); ++i) {
             if (!query_results[i] ||
                 query_results[i].value().replicas.empty()) {
@@ -1211,14 +1209,8 @@ RealClient::batch_get_buffer_internal(const std::vector<std::string> &keys,
             auto pref = client_->GetPreferredReplica(
                 query_results[i].value().replicas);
             if (pref && !client_->IsReplicaOnLocalMemory(pref.value())) {
-                if (try_cache_on_get(keys[i])) {
-                    any_cached = true;
-                }
+                try_cache_on_get(keys[i]);
             }
-        }
-        if (any_cached) {
-            // Re-query all keys to pick up newly cached local replicas
-            query_results = client_->BatchQuery(keys);
         }
     }
 
@@ -1387,12 +1379,10 @@ tl::expected<int64_t, ErrorCode> RealClient::get_into_internal(
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
     }
 
-    // Cache-on-get: if preferred replica is not local, try caching
+    // Cache-on-get: if preferred replica is not local, trigger async caching
+    // for future calls. This call proceeds with remote transfer at normal speed.
     if (cache && !client_->IsReplicaOnLocalMemory(res.value())) {
-        if (try_cache_on_get(key)) {
-            // Cache succeeded, re-run with cache=false to pick up local replica
-            return get_into_internal(key, buffer, size, false);
-        }
+        try_cache_on_get(key);
     }
 
     const auto &replica = res.value();
@@ -1697,9 +1687,9 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
     // Query metadata for all keys
     auto query_results = client_->BatchQuery(keys);
 
-    // Cache-on-get: for keys whose preferred replica is not local, try caching
+    // Cache-on-get: trigger async caching for non-local keys (fire-and-forget).
+    // This call proceeds with remote transfer; future calls benefit from cache.
     if (cache) {
-        bool any_cached = false;
         for (size_t i = 0; i < num_keys; ++i) {
             if (!query_results[i] ||
                 query_results[i].value().replicas.empty()) {
@@ -1708,14 +1698,8 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
             auto pref = client_->GetPreferredReplica(
                 query_results[i].value().replicas);
             if (pref && !client_->IsReplicaOnLocalMemory(pref.value())) {
-                if (try_cache_on_get(keys[i])) {
-                    any_cached = true;
-                }
+                try_cache_on_get(keys[i]);
             }
-        }
-        if (any_cached) {
-            // Re-query all keys to pick up newly cached local replicas
-            query_results = client_->BatchQuery(keys);
         }
     }
 
@@ -2516,45 +2500,37 @@ tl::expected<ReturnType, ErrorCode> ClientRequester::invoke_rpc(
             co_return result->result();
         }());
 }
-bool RealClient::try_cache_on_get(const std::string &key) {
+void RealClient::try_cache_on_get(const std::string &key) {
     // Check if another thread is already caching this key (read lock)
     {
         std::shared_lock<std::shared_mutex> rlock(cache_inflight_mutex_);
         if (cache_inflight_.count(key)) {
-            // Another thread is already caching — caller proceeds with remote
-            // transfer from existing query results (no blocking)
-            return false;
+            return;  // Already being cached by another thread
         }
     }
 
     // Try to claim this key for caching (write lock)
     {
         std::unique_lock<std::shared_mutex> wlock(cache_inflight_mutex_);
-        // Double-check after acquiring write lock
         if (!cache_inflight_.insert(key).second) {
-            // Another thread claimed it between read and write lock
-            return false;
+            return;  // Another thread claimed it between read and write lock
         }
     }
 
-    // This thread owns the cache operation for this key
-    bool success = false;
-    auto result =
-        client_->TryCacheOnGet(key, client_->GetLocalHostname());
-    if (result.has_value()) {
-        success = true;
-    } else {
-        LOG(WARNING) << "try_cache_on_get failed for key=" << key
-                     << ", error=" << toString(result.error());
-    }
+    // Fire-and-forget: launch caching in background thread.
+    // Caller proceeds with remote transfer at normal speed.
+    std::thread([this, key]() {
+        auto result =
+            client_->TryCacheOnGet(key, client_->GetLocalHostname());
+        if (!result.has_value()) {
+            LOG(WARNING) << "try_cache_on_get failed for key=" << key
+                         << ", error=" << toString(result.error());
+        }
 
-    // Remove from inflight set (write lock)
-    {
+        // Remove from inflight set
         std::unique_lock<std::shared_mutex> wlock(cache_inflight_mutex_);
         cache_inflight_.erase(key);
-    }
-
-    return success;
+    }).detach();
 }
 
 }  // namespace mooncake
