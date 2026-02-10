@@ -1086,11 +1086,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
         return nullptr;
     }
 
-    // Cache-on-get: if preferred replica is not local, trigger async caching
-    // for future calls. This call proceeds with remote transfer at normal speed.
-    if (cache && !client_->IsReplicaOnLocalMemory(res.value())) {
-        try_cache_on_get(key);
-    }
+    // Track whether we need to trigger async caching after the Get
+    bool should_cache =
+        cache && !client_->IsReplicaOnLocalMemory(res.value());
 
     const auto &replica = res.value();
     uint64_t total_length = calculate_total_size(replica);
@@ -1118,6 +1116,12 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
         LOG(ERROR) << "Get failed for key: " << key
                    << " with error: " << toString(get_result.error());
         return nullptr;
+    }
+
+    // Trigger async caching AFTER the Get completes, so the background
+    // caching transfer doesn't compete for bandwidth with the actual read.
+    if (should_cache) {
+        try_cache_on_get(key);
     }
 
     // Create BufferHandle with the allocated memory
@@ -1198,8 +1202,8 @@ RealClient::batch_get_buffer_internal(const std::vector<std::string> &keys,
     // 1. Query metadata for all keys
     auto query_results = client_->BatchQuery(keys);
 
-    // Cache-on-get: trigger async caching for non-local keys (fire-and-forget).
-    // This call proceeds with remote transfer; future calls benefit from cache.
+    // Collect non-local keys that need async caching (triggered after Get)
+    std::vector<std::string> keys_to_cache;
     if (cache) {
         for (size_t i = 0; i < keys.size(); ++i) {
             if (!query_results[i] ||
@@ -1209,7 +1213,7 @@ RealClient::batch_get_buffer_internal(const std::vector<std::string> &keys,
             auto pref = client_->GetPreferredReplica(
                 query_results[i].value().replicas);
             if (pref && !client_->IsReplicaOnLocalMemory(pref.value())) {
-                try_cache_on_get(keys[i]);
+                keys_to_cache.push_back(keys[i]);
             }
         }
     }
@@ -1300,6 +1304,11 @@ RealClient::batch_get_buffer_internal(const std::vector<std::string> &keys,
         }
     }
 
+    // Trigger async caching AFTER the batch Get completes
+    for (const auto &k : keys_to_cache) {
+        try_cache_on_get(k);
+    }
+
     return final_results;
 }
 
@@ -1379,11 +1388,9 @@ tl::expected<int64_t, ErrorCode> RealClient::get_into_internal(
         return tl::unexpected(ErrorCode::INVALID_PARAMS);
     }
 
-    // Cache-on-get: if preferred replica is not local, trigger async caching
-    // for future calls. This call proceeds with remote transfer at normal speed.
-    if (cache && !client_->IsReplicaOnLocalMemory(res.value())) {
-        try_cache_on_get(key);
-    }
+    // Track whether we need to trigger async caching after the Get
+    bool should_cache =
+        cache && !client_->IsReplicaOnLocalMemory(res.value());
 
     const auto &replica = res.value();
     uint64_t total_size = calculate_total_size(replica);
@@ -1406,6 +1413,11 @@ tl::expected<int64_t, ErrorCode> RealClient::get_into_internal(
         LOG(ERROR) << "Get failed for key: " << key
                    << " with error: " << toString(get_result.error());
         return tl::unexpected(get_result.error());
+    }
+
+    // Trigger async caching AFTER the Get completes
+    if (should_cache) {
+        try_cache_on_get(key);
     }
 
     return static_cast<int64_t>(total_size);
@@ -1687,8 +1699,8 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
     // Query metadata for all keys
     auto query_results = client_->BatchQuery(keys);
 
-    // Cache-on-get: trigger async caching for non-local keys (fire-and-forget).
-    // This call proceeds with remote transfer; future calls benefit from cache.
+    // Collect non-local keys that need async caching (triggered after Get)
+    std::vector<std::string> keys_to_cache;
     if (cache) {
         for (size_t i = 0; i < num_keys; ++i) {
             if (!query_results[i] ||
@@ -1698,7 +1710,7 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
             auto pref = client_->GetPreferredReplica(
                 query_results[i].value().replicas);
             if (pref && !client_->IsReplicaOnLocalMemory(pref.value())) {
-                try_cache_on_get(keys[i]);
+                keys_to_cache.push_back(keys[i]);
             }
         }
     }
@@ -1857,6 +1869,11 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
               << "us, read store: " << read_store_time
               << "us, with memory key count: " << valid_operations.size()
               << ", offload key count: " << offload_object_count;
+
+    // Trigger async caching AFTER the batch Get completes
+    for (const auto &k : keys_to_cache) {
+        try_cache_on_get(k);
+    }
 
     return results;
 }
